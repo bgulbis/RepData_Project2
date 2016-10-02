@@ -1,0 +1,16 @@
+base
+methods
+datasets
+utils
+grDevices
+graphics
+stats
+dplyr
+lubridate
+stringr
+ggplot2
+maps
+grid
+gridExtra
+pander
+RColorBrewer

@@ -1,0 +1,260 @@
+---
+title: "A 5-Year Analysis of the Impact of Severe Weather Events throughout the United States"
+subtitle: "Reproducible Research Project"
+author: "Brian Gulbis"
+output:
+  html_document:
+    fig_caption: yes
+---
+
+## Synopsis
+
+The objective of this analysis was to determine which types of storm events in the United States have been the most harmful to population health and which types have had the greatest economic consequences. The data included storm events from 2007 through 2011 taken from the NOAA Storm Event Database. The 10 most harmful and 10 most damaging storming events will be reported, and the states experiencing the largest impact from each of these event lists will be identified. The data were processed using `r R.Version()$version.string`.
+
+The most harmful storm event was the tornado, producing in excess of 10,000 fatalities and injuries during this 5-year period. The most damaging storm event in terms of economic impact was flooding, result in over $15 billion of damage, followed closely by tornadoes.The states with the largest number of harmful events were Alabama and Missouri, while the state suffering the most economic damage was Texas.
+
+## Data Processing
+
+The data used for this analysis were taken from the United States National Oceanic and Atmospheric Administration's (NOAA) Storm Event Database. This database has been used since 1950 to record data about major storms and weather events in the U.S, such as date, location, magnitude, and estimates of fatalities, injuries, and property damage which are related to the event. There are some limitations to this database:
+
+* Only tornado events were reported from 1950 to 1954
+* Tornado, thunderstorm wind, and hail events were reported from 1955 to 1992
+* Additional events have been reported from 1993 through present, however, events prior to 2007 have been inconsistently recorded
+* Data from 2007 to 2011 have been tidied and grouped into 48 storm event categories, outlined by the NOAA and listed below.
+
+
+The data were processed using `r R.Version()$version.string` on a `r R.Version()$platform` system. Several additional packages were used to tidy the raw data and prepare the report.
+
+
+```{r packages}
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+library(maps)
+library(grid)
+library(gridExtra)
+library(pander)
+library(RColorBrewer)
+```
+
+```{r pander_options, results='asis'}
+panderOptions('knitr.auto.asis', TRUE)
+panderOptions('round', 1)
+panderOptions('table.style', 'multiline')
+panderOptions('table.split.table', Inf)
+panderOptions('list.style', 'ordered')
+```
+
+```{r get_lookups}
+all_state <- map_data("state")
+states <- state.abb
+dc <- data.frame(abb = "DC", region = "district of columbia")
+states.dc <- data.frame(abb = state.abb, region = str_to_lower(state.name[match(states, state.abb)])) %>%
+    bind_rows(dc)
+
+noaa.events <- read.csv("noaa event types.csv", colClasses = "character") %>%
+    mutate(event.type = str_to_title(event.type))
+```
+
+#### NOAA Storm Event Types
+
+```{r noaa_events, results='asis'}
+pandoc.list(as.list(noaa.events$event.type))
+```
+
+
+```{r get_rawdata, cache=TRUE}
+raw <- read.csv("repdata-data-StormData.csv.bz2", colClasses = "character") 
+```
+
+### Scope of the Analysis
+
+The analysis was limited to events which occurred between 2007 and 2011. This date range was selected because the data during this period followed stricter NOAA specifications for categorizing storm events, resulting in significantly fewer inconsistencies than earlier time periods. Furthermore, historical data was limited to selected storm event types (e.g., only tornado, thunderstorm wind, and hail were reported from 1955 to 1992), which could bias the results towards these events.
+
+### Tidying the Data
+
+Initial processing of the raw data began by assigning variables to the proper classes. The data were limited to events occurring on or after January 1, 2007. The full state names were added to the data set, which will be used to map the prevalence of events on a state-by-state basis. 
+
+```{r set_data}
+data <- raw %>%
+    transmute(begin.date = mdy_hms(BGN_DATE),
+              end.date = mdy_hms(END_DATE),
+              state = STATE,
+              county = COUNTYNAME,
+              event = str_to_title(str_trim(EVTYPE, side = "both")),
+              tornado.strength = as.numeric(F),
+              magnitude = as.numeric(MAG),
+              fatalities = as.numeric(FATALITIES),
+              injuries = as.numeric(INJURIES),
+              property = as.numeric(PROPDMG),
+              pde = ifelse(PROPDMGEXP == "", NA, str_to_lower(PROPDMGEXP)),
+              crop = as.numeric(CROPDMG),
+              cde = ifelse(CROPDMGEXP == "", NA, str_to_lower(CROPDMGEXP))) %>%
+    filter(begin.date >= mdy("1/1/2007")) %>%
+    left_join(states.dc, by=c("state" = "abb")) 
+```
+
+To evaluate property and crop damage, the numerical damage figure was multiplied by the exponent to calculate the actual amount of damage. The following definitions were used for the exponents:
+
+* h = hundreds
+* k = thousands
+* m = millions
+* b = billions
+
+
+For any other character in the exponent, the damage value was multiplied by 10.
+
+* This was determined by cross-referencing damage values with the online NOAA Storm Event Database, which indicated that these miscellaneous characters were erroneously placed in the damage exponent column when in fact they should have been the last digit of the damage value. Since these values were very small, the damage value was rounded to the approximate value through multiplying by 10.
+
+
+```{r assign_damage}
+data <- mutate(data, pde = str_replace(pde, "([^bhkm])", 10),
+              pde = str_replace(pde, "h", 100),
+              pde = str_replace(pde, "k", 1000),
+              pde = str_replace(pde, "m", 1000000),
+              pde = str_replace(pde, "b", 1000000000),
+              pde = as.numeric(pde),
+              property.damage = ifelse(!is.na(pde), property * pde, property),
+              cde = str_replace(cde, "([^bhkm])", 10),
+              cde = str_replace(cde, "h", 100),
+              cde = str_replace(cde, "k", 1000),
+              cde = str_replace(cde, "m", 1000000),
+              cde = str_replace(cde, "b", 1000000000),
+              cde = as.numeric(cde),
+              crop.damage = ifelse(!is.na(cde), crop * cde, crop))
+```
+                             
+### Summarizing the Data
+
+To summarize the data, the total number of fatalities, injuries, property damage, and crop damage for each storm event were calculated. The total harm of the event was then determined by adding the number of fatalities and injuries. The total damage produced by the event was determine by adding the amount of property damage with the amount of crop damage. 
+
+```{r totals}
+events.total <- group_by(data, event) %>%
+    summarize(count = n(),
+              fatalities = sum(fatalities),
+              injuries = sum(injuries),
+              property.damage = sum(property.damage),
+              crop.damage = sum(crop.damage)) %>%
+    mutate(harm = fatalities + injuries,
+           damage = property.damage + crop.damage)
+```
+
+
+## Results
+
+Events included in this analysis occurred between 2007 and 2011. In this analysis, harmful to the population health was defined as causing  a fatality or injury, while economic consequence was defined as causing damage to property or crops.
+
+### The Most Harmful and Most Damaging Storm Event Types
+
+The total harm and damage were calculated for each event type, and the top 10 events in each group were selected. The total amount of damge will be reported as $Billions. The 10 most harmful event types and 10 most damaging event types are reported in figure 1 below.
+
+A full list of results for all 48 storm event types can be found in table 1 in the appendix at the end of this document.
+
+```{r result_harm}
+top.harm <- select(events.total, event, harm) %>%
+    arrange(desc(harm)) %>%
+    top_n(10, harm)
+
+top.damage <- select(events.total, event, damage) %>%
+    mutate(damage = damage / 1000000000) %>%
+    arrange(desc(damage)) %>%
+    top_n(10, damage)
+```
+
+
+```{r fig1, fig.align='center'}
+cols <- brewer.pal(5, "Blues")
+graph1 <- ggplot(top.harm, aes(x=event, y=harm)) +
+    geom_bar(stat="identity", fill=cols[3], color="black") + 
+    ggtitle("A. Most Harmful Storm Events") +
+    xlab("Storm Event") +
+    ylab("Number of Harmful Events") +
+    scale_x_discrete(limits=top.harm$event) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1))
+
+cols <- brewer.pal(5, "Greens")
+graph2 <- ggplot(top.damage, aes(x=event, y=damage)) +
+    geom_bar(stat="identity", fill=cols[3], color="black") + 
+    ggtitle("B. Most Damaging Storm Events") +
+    xlab("Storm Event") +
+    ylab("Damage Totals in Billions ($)") +
+    scale_x_discrete(limits=top.damage$event) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1))
+
+grid.arrange(graph1, graph2, ncol = 2, top="Figure 1. Top 10 Most Harmful and Most Damaging Events from 2007 to 2011")
+```
+
+### States with the Highest Prevelance of Harmful and Damaging Storm Events
+
+The 10 most harmful and 10 most damaging storm event types were then totaled on a state-by-state basis to determine the prevalence of each event type within the 50 U.S. states and District of Columbia. The incidence of these event types, ranging from least to most, can be found in figure 2 below.
+
+```{r harm_states}
+state.harm <- filter(data, event %in% top.harm$event) %>%
+    group_by(region) %>%
+    summarize(count = n(),
+          fatalities = sum(fatalities),
+          injuries = sum(injuries)) %>%
+    mutate(harm = fatalities + injuries) %>%
+    arrange(harm) %>%
+    inner_join(all_state, by="region")
+
+state.damage <- filter(data, event %in% top.damage$event) %>%
+    group_by(region) %>%
+    summarize(count = n(),
+              property.damage = sum(property.damage),
+              crop.damage = sum(crop.damage)) %>%
+    mutate(damage = (property.damage + crop.damage)/1000000000) %>%
+    arrange(damage) %>%
+    inner_join(all_state, by="region")
+```
+
+```{r statefig, fig.align='center'}
+cols <- brewer.pal(5, "Blues")
+graph1 <- ggplot() +
+    geom_polygon(data=state.harm, aes(x=long, y=lat, group=group, fill=harm), colour="white") +
+    scale_fill_continuous(low=cols[1], high=cols[5], guide="colorbar") +
+    labs(title="A. Most Harmful Events", x="", y="", fill="Number of Harmful Events") +
+    scale_x_continuous(breaks = NULL) +
+    scale_y_continuous(breaks = NULL) +
+    theme_bw() +
+    theme(legend.position="bottom")
+
+cols <- brewer.pal(5, "Greens")
+graph2 <- ggplot() +
+    geom_polygon(data=state.damage, aes(x=long, y=lat, group=group, fill=damage), colour="white") +
+    scale_fill_continuous(low=cols[1], high=cols[5], guide="colorbar") +
+    labs(title="B. Most Damaging Events", x="", y="", fill="Cost of Damaging Events\nin $Billion") +
+    scale_x_continuous(breaks = NULL) +
+    scale_y_continuous(breaks = NULL) +
+    theme_bw() +
+    theme(legend.position="bottom")
+
+grid.arrange(graph1, graph2, ncol=2, top="Figure 2. Top 10 Most Harmful and Most Damaging Events by State")
+```
+
+
+## References
+
+1. [NOAA Storm Event Database Details](http://www.ncdc.noaa.gov/stormevents/details.jsp)
+2. [NOAA's NWS Documentation](http://www.ncdc.noaa.gov/stormevents/pd01016005curr.pdf)
+
+
+## Appendix
+
+```{r table1}
+all.harm <- select(events.total, event, harm) %>%
+    arrange(desc(harm)) 
+
+all.damage <- select(events.total, event, damage) %>%
+    mutate(damage = damage / 1000000000) %>%
+    arrange(desc(damage)) 
+
+all.harm <- bind_cols(all.harm, all.damage)
+
+colnames(all.harm) <- c("Harmful Events","Harm Produced","Damaging Events","Damage Produced")
+set.caption("Table 1. List of Harm and Damage Produced by Storm Events")
+pander(all.harm)
+```
